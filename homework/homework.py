@@ -95,3 +95,135 @@
 # {'type': 'cm_matrix', 'dataset': 'train', 'true_0': {"predicted_0": 15562, "predicte_1": 666}, 'true_1': {"predicted_0": 3333, "predicted_1": 1444}}
 # {'type': 'cm_matrix', 'dataset': 'test', 'true_0': {"predicted_0": 15562, "predicte_1": 650}, 'true_1': {"predicted_0": 2490, "predicted_1": 1420}}
 #
+import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import GridSearchCV
+import pickle
+import gzip
+import os
+import json
+from sklearn.svm import SVC
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.metrics import precision_score, balanced_accuracy_score, recall_score, f1_score
+from sklearn.metrics import confusion_matrix
+dftest = pd.read_csv('files/input/test_data.csv.zip', compression='zip')
+dftrain = pd.read_csv('files/input/train_data.csv.zip', compression='zip')
+dftest.rename(columns={'default payment next month': 'default'}, inplace=True)
+dftrain.rename(columns={'default payment next month': 'default'}, inplace=True)
+dftest.drop(columns=['ID'], inplace=True)
+dftrain.drop(columns=['ID'], inplace=True)
+
+dftrain = dftrain[dftrain['EDUCATION'] != 0]
+dftest = dftest[dftest['EDUCATION'] != 0]
+dftrain = dftrain[dftrain['MARRIAGE'] != 0]
+dftest = dftest[dftest['MARRIAGE'] != 0]
+dftrain['EDUCATION'] = dftrain['EDUCATION'].apply(lambda x: 4 if x > 4 else x)
+dftest['EDUCATION'] = dftest['EDUCATION'].apply(lambda x: 4 if x > 4 else x)
+
+X_train = dftrain.drop(columns=['default']) 
+y_train = dftrain['default'] 
+
+X_test = dftest.drop(columns=['default']) 
+y_test = dftest['default']
+
+columnas_categoricas = ['SEX', 'EDUCATION', 'MARRIAGE']
+columnas_numericas = [col for col in X_train.columns if col not in columnas_categoricas]
+
+preprocesador = ColumnTransformer(
+    transformers=[
+        ('cat', OneHotEncoder(handle_unknown='ignore'), columnas_categoricas),
+        ('num', StandardScaler(), columnas_numericas)
+    
+    ],
+    remainder='passthrough'
+)
+
+pipeline_modelo = Pipeline(steps=[
+        ("preprocessor", preprocesador),
+        ("pca", PCA()),
+        ("select_k_best", SelectKBest(k=12)),
+        ("classifier", SVC(gamma=0.1)), 
+])
+parametros_a_probar = {
+    "pca__n_components": [20, 21],  
+}
+
+optimizador = GridSearchCV(
+    estimator=pipeline_modelo,            
+    param_grid=parametros_a_probar,       
+    cv=10,                                
+    scoring='balanced_accuracy',          
+    n_jobs=6,
+    verbose=3,
+    refit=True,                          
+)
+
+
+optimizador.fit(X_train, y_train)
+
+
+bestModel = optimizador.best_estimator_
+
+path = 'files/models'
+fileName = 'model.pkl.gz'
+route = os.path.join(path, fileName)
+
+os.makedirs(path, exist_ok=True) # Esto hace lo mismo que tu IF pero en una sola línea limpia
+
+with gzip.open(route, 'wb') as f:
+    pickle.dump(optimizador, f, protocol=4)
+
+y_train_pred = bestModel.predict(X_train)
+y_test_pred = bestModel.predict(X_test)
+
+metrics_train = {
+    'type': 'metrics',
+    'dataset': 'train',
+    'precision': round(precision_score(y_train, y_train_pred), 4),
+    'balanced_accuracy': round(balanced_accuracy_score(y_train, y_train_pred), 4),
+    'recall': round(recall_score(y_train, y_train_pred), 4),
+    'f1_score': round(f1_score(y_train, y_train_pred), 4)
+}
+metricas = {
+    'type': 'metrics',
+    'dataset': 'test',
+    'precision': round(precision_score(y_test, y_test_pred), 4),
+    'balanced_accuracy': round(balanced_accuracy_score(y_test, y_test_pred), 4),
+    'recall': round(recall_score(y_test, y_test_pred), 4),
+    'f1_score': round(f1_score(y_test, y_test_pred), 4)
+}
+
+ruta_archivo = 'files/output/metrics.json'
+os.makedirs(os.path.dirname(ruta_archivo), exist_ok=True)
+with open(ruta_archivo, 'w', encoding='utf-8') as archivo:
+    # Escribimos el diccionario de train y un salto de línea (\n)
+    archivo.write(json.dumps(metrics_train) + '\n')
+    # Escribimos el diccionario de test y un salto de línea (\n)
+    archivo.write(json.dumps(metricas) + '\n')
+
+cm_train = confusion_matrix(y_train, y_train_pred)
+cm_test = confusion_matrix(y_test, y_test_pred)
+dict_cm_train = {
+    'type': 'cm_matrix',
+    'dataset': 'train',
+    'true_0': {"predicted_0": int(cm_train[0][0]), "predicted_1": int(cm_train[0][1])},
+    'true_1': {"predicted_0": int(cm_train[1][0]), "predicted_1": int(cm_train[1][1])}
+}
+
+dict_cm_test = {
+    'type': 'cm_matrix',
+    'dataset': 'test',
+    'true_0': {"predicted_0": int(cm_test[0][0]), "predicted_1": int(cm_test[0][1])},
+    'true_1': {"predicted_0": int(cm_test[1][0]), "predicted_1": int(cm_test[1][1])}
+}
+
+setRoute = 'files/output/metrics.json'
+os.makedirs(os.path.dirname(setRoute), exist_ok=True)
+with open(ruta_archivo, 'a', encoding='utf-8') as archivo:
+    archivo.write(json.dumps(dict_cm_train) + '\n')
+    archivo.write(json.dumps(dict_cm_test) + '\n')
